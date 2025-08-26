@@ -1,3 +1,8 @@
+random_summary = "As I sat at my desk with the faint hum of my laptop fan competing against the muffled sounds of traffic outside, I couldn’t help but reflect on the peculiar nature of ambition, how it drives us to chase goals that often seem distant and intimidating, and yet, in the quiet moments between the chaos, I began to wonder if ambition is less about the finish line we imagine and more about the endless process of showing up each day, confronting fears that disguise themselves as excuses, and building a kind of resilience that no textbook or mentor can fully explain, because resilience, I realized, is forged in the tiny decisions we repeat over and over — like choosing to keep writing when the words feel clumsy, or continuing to exercise when the mirror doesn’t immediately reward the effort, or persisting with a project when the people around us don’t entirely understand its value — and the longer I thought about it, the more it struck me that perhaps the greatest measure of success is not the recognition we eventually receive but the stubborn willingness to keep going in the face of uncertainty, to cultivate a rhythm of persistence that turns even our smallest, most fragile actions into proof that fear does not hold the final word."
+
+
+
+
 import asyncio
 from aiohttp import web
 from aiortc.mediastreams import MediaStreamTrack
@@ -294,20 +299,22 @@ peers = {}  # sid -> RTCPeerConnection
 
 async def delayed_processing(frames , sid):
     if frames:
-        print(f"⏳ {len(frames)} frames collected, processing now...")
+        print(f"⏳ {len(frames)} frames collected, processing now..." , video_sessions[sid]['prev_summary_processed_time'])
         # Example processing call
-        current_fps = len(frames) / (time.time() - video_sessions[sid]['stream_start_time'])
+        current_fps = len(frames) / (time.time() - video_sessions[sid]['prev_summary_processed_time'])
+        video_sessions[sid]['prev_summary_processed_time'] = time.time()
         print(f"FPS: {current_fps}")
         skip_frames = max(1, int(current_fps / PROCESSING_FPS)) # PROCESSING_FPS is 5
         filtered_frames = []
         for i in range(0, len(frames), skip_frames):
             filtered_frames.append(frames[i])
         print("🚀 Processing frames size :", len(filtered_frames))
-        sio.emit("summary_processing" , {"status" : True} , to=sid)
+        await sio.emit("summary_processing" , {"status" : True} , to=sid)
         summary = await video_summary_server.process_video_frames(filtered_frames)
-        sio.emit("summary_end" , {"summary" : summary} , to=sid)
+        
+        await sio.emit("summary_end" , {"summary" : random_summary} , to=sid)
         return summary
-
+ 
 # ----------------------------
 # Socket.IO events
 # ----------------------------
@@ -320,7 +327,8 @@ async def connect(sid, environ):
     "is_recording": False,       # optional flag if needed
     "start_time": None,          # when recording started
     "stream_start_time": None,   # WebRTC stream start
-    "stream_end_time": None      # WebRTC stream stop
+    "stream_end_time": None,      # WebRTC stream stop
+    "prev_summary_processed_time" : None
     }
 
 @sio.event
@@ -355,7 +363,7 @@ async def offer(sid, data):
     def on_track(track: MediaStreamTrack):
         print(f"🎥 Track received from {sid}: {track.kind}")
         video_sessions[sid]['stream_start_time'] = time.time()
-        
+        video_sessions[sid]['prev_summary_processed_time'] = time.time()
 
         if track.kind == "video":
             
