@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Summary System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 2rem;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            max-width: 900px;
+            width: 90%;
+            text-align: center;
+        }
+
+        h1 {
+            color: #4a5568;
+            margin-bottom: 2rem;
+            font-size: 2.5rem;
+            font-weight: 300;
+        }
+
+        .video-container {
+            position: relative;
+            margin-bottom: 2rem;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+        }
+
+        #videoElement {
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+            display: block;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 120px;
+        }
+
+        #startBtn {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            color: white;
+        }
+
+        #startBtn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+
+        #startBtn:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #stopBtn {
+            background: linear-gradient(45deg, #f44336, #da190b);
+            color: white;
+        }
+
+        #stopBtn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+        }
+
+        #stopBtn:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-bottom: 2rem;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            padding: 8px 20px;
+            border-radius: 25px;
+            font-weight: 500;
+            margin-bottom: 1rem;
+        }
+
+        .status-idle { background: #e3f2fd; color: #1976d2; }
+        .status-recording { background: #ffebee; color: #d32f2f; }
+        .status-processing { background: #fff3e0; color: #f57c00; }
+        .status-complete { background: #e8f5e8; color: #388e3c; }
+
+        .countdown {
+            font-size: 3rem;
+            font-weight: bold;
+            color: #f44336;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            margin: 1rem 0;
+            display: none;
+        }
+
+        .countdown.active {
+            display: block;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        .summary-container {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 2rem;
+            margin-top: 2rem;
+            text-align: left;
+            border-left: 4px solid #667eea;
+            display: none;
+        }
+
+        .summary-container.visible {
+            display: block;
+            animation: slideUp 0.5s ease;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .summary-title {
+            color: #4a5568;
+            margin-bottom: 1rem;
+            font-size: 1.5rem;
+        }
+
+        .summary-text {
+            line-height: 1.8;
+            color: #2d3748;
+            font-size: 1.1rem;
+        }
+
+        .connection-status {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .progress-bar.active {
+            display: block;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #45a049);
+            width: 0%;
+            transition: width 0.1s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="connection-status" id="connectionStatus">Disconnected</div>
+        
+        <h1>🎥 AI Video Summary</h1>
+        
+        <div class="video-container">
+            <video id="videoElement" autoplay muted playsinline></video>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn">▶️ Start Recording</button>
+            <button id="stopBtn" disabled>⏹️ Stop Recording</button>
+        </div>
+        
+        <div class="status">
+            <div class="status-indicator" id="statusIndicator">Ready to record</div>
+            <div class="progress-bar" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="countdown" id="countdown">10</div>
+        </div>
+        
+        <div class="summary-container" id="summaryContainer">
+            <h3 class="summary-title">📝 Video Summary</h3>
+            <div class="summary-text" id="summaryText"></div>
+        </div>
+    </div>
+
+    <script>
+        class VideoSummaryClient {
+            constructor() {
+                this.ws = null;
+                this.mediaStream = null;
+                this.videoElement = document.getElementById('videoElement');
+                this.startBtn = document.getElementById('startBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.statusIndicator = document.getElementById('statusIndicator');
+                this.countdown = document.getElementById('countdown');
+                this.summaryContainer = document.getElementById('summaryContainer');
+                this.summaryText = document.getElementById('summaryText');
+                this.connectionStatus = document.getElementById('connectionStatus');
+                this.progressBar = document.getElementById('progressBar');
+                this.progressFill = document.getElementById('progressFill');
+                
+                this.isRecording = false;
+                this.recordingTimer = null;
+                this.countdownTimer = null;
+                this.frameInterval = null;
+                this.recordingDuration = 10; // seconds
+                
+                this.init();
+            }
+            
+            async init() {
+                await this.setupCamera();
+                this.connectWebSocket();
+                this.setupEventListeners();
+            }
+            
+            async setupCamera() {
+                try {
+                    this.mediaStream = await navigator.mediaDevices.getUserMedia({
+                        video: { 
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            frameRate: { ideal: 30 }
+                        },
+                        audio: false
+                    });
+                    this.videoElement.srcObject = this.mediaStream;
+                    console.log('Camera initialized successfully');
+                } catch (error) {
+                    console.error('Error accessing camera:', error);
+                    this.updateStatus('Camera access failed', 'status-error');
+                }
+            }
+            
+            connectWebSocket() {
+                this.ws = new WebSocket('ws://localhost:8765');
+                
+                this.ws.onopen = () => {
+                    console.log('WebSocket connected');
+                    this.connectionStatus.textContent = 'Connected';
+                    this.connectionStatus.className = 'connection-status connected';
+                    this.updateStatus('Connected and ready', 'status-idle');
+                };
+                
+                this.ws.onclose = () => {
+                    console.log('WebSocket disconnected');
+                    this.connectionStatus.textContent = 'Disconnected';
+                    this.connectionStatus.className = 'connection-status disconnected';
+                    this.updateStatus('Disconnected from server', 'status-idle');
+                    
+                    // Attempt to reconnect after 3 seconds
+                    setTimeout(() => this.connectWebSocket(), 3000);
+                };
+                
+                this.ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    this.handleServerMessage(data);
+                };
+                
+                this.ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+            }
+            
+            setupEventListeners() {
+                this.startBtn.addEventListener('click', () => this.startRecording());
+                this.stopBtn.addEventListener('click', () => this.stopRecording());
+            }
+            
+            handleServerMessage(data) {
+                switch (data.type) {
+                    case 'summary_ready':
+                        this.displaySummary(data.summary);
+                        this.updateStatus('Summary generated successfully!', 'status-complete');
+                        this.resetUI();
+                        break;
+                    case 'error':
+                        console.error('Server error:', data.message);
+                        this.updateStatus(`Error: ${data.message}`, 'status-error');
+                        this.resetUI();
+                        break;
+                    case 'processing_status':
+                        this.updateStatus(data.message, 'status-processing');
+                        break;
+                }
+            }
+            
+            startRecording() {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                    alert('Not connected to server. Please wait...');
+                    return;
+                }
+                
+                this.isRecording = true;
+                this.startBtn.disabled = true;
+                this.stopBtn.disabled = false;
+                this.summaryContainer.classList.remove('visible');
+                
+                this.updateStatus('Recording...', 'status-recording');
+                this.showCountdown();
+                this.showProgressBar();
+                
+                // Send start recording message
+                this.ws.send(JSON.stringify({
+                    type: 'start_recording',
+                    duration: this.recordingDuration
+                }));
+                
+                // Start sending frames
+                this.startFrameCapture();
+                
+                // Auto-stop after duration
+                this.recordingTimer = setTimeout(() => {
+                    this.stopRecording();
+                }, this.recordingDuration * 1000);
+            }
+            
+            stopRecording() {
+                if (!this.isRecording) return;
+                
+                this.isRecording = false;
+                this.startBtn.disabled = false;
+                this.stopBtn.disabled = true;
+                
+                // Clear timers and intervals
+                if (this.recordingTimer) clearTimeout(this.recordingTimer);
+                if (this.countdownTimer) clearInterval(this.countdownTimer);
+                if (this.frameInterval) clearInterval(this.frameInterval);
+                
+                this.hideCountdown();
+                this.hideProgressBar();
+                this.updateStatus('Processing video...', 'status-processing');
+                
+                // Send stop recording message
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({ type: 'stop_recording' }));
+                }
+            }
+            
+            startFrameCapture() {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                // Capture frames at ~10 FPS to reduce bandwidth
+                this.frameInterval = setInterval(() => {
+                    if (!this.isRecording) return;
+                    
+                    canvas.width = this.videoElement.videoWidth;
+                    canvas.height = this.videoElement.videoHeight;
+                    ctx.drawImage(this.videoElement, 0, 0);
+                    
+                    // Convert to base64 JPEG (compressed)
+                    const frameData = canvas.toDataURL('image/jpeg', 0.7);
+                    
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({
+                            type: 'frame_data',
+                            frame: frameData,
+                            timestamp: Date.now()
+                        }));
+                    }
+                }, 100); // ~10 FPS
+            }
+            
+            showCountdown() {
+                let timeLeft = this.recordingDuration;
+                this.countdown.textContent = timeLeft;
+                this.countdown.classList.add('active');
+                
+                this.countdownTimer = setInterval(() => {
+                    timeLeft--;
+                    this.countdown.textContent = timeLeft;
+                    
+                    if (timeLeft <= 0) {
+                        this.hideCountdown();
+                    }
+                }, 1000);
+            }
+            
+            hideCountdown() {
+                this.countdown.classList.remove('active');
+                if (this.countdownTimer) {
+                    clearInterval(this.countdownTimer);
+                    this.countdownTimer = null;
+                }
+            }
+            
+            showProgressBar() {
+                this.progressBar.classList.add('active');
+                this.progressFill.style.width = '0%';
+                
+                const startTime = Date.now();
+                const duration = this.recordingDuration * 1000;
+                
+                const updateProgress = () => {
+                    if (!this.isRecording) return;
+                    
+                    const elapsed = Date.now() - startTime;
+                    const progress = Math.min((elapsed / duration) * 100, 100);
+                    this.progressFill.style.width = `${progress}%`;
+                    
+                    if (progress < 100) {
+                        requestAnimationFrame(updateProgress);
+                    }
+                };
+                
+                updateProgress();
+            }
+            
+            hideProgressBar() {
+                this.progressBar.classList.remove('active');
+            }
+            
+            displaySummary(summary) {
+                this.summaryText.textContent = summary;
+                this.summaryContainer.classList.add('visible');
+            }
+            
+            updateStatus(message, className) {
+                this.statusIndicator.textContent = message;
+                this.statusIndicator.className = `status-indicator ${className}`;
+            }
+            
+            resetUI() {
+                this.startBtn.disabled = false;
+                this.stopBtn.disabled = true;
+                this.hideCountdown();
+                this.hideProgressBar();
+            }
+        }
+        
+        // Initialize the application when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new VideoSummaryClient();
+        });
+    </script>
+</body>
+</html>
