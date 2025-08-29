@@ -1,3 +1,5 @@
+# =================== initiaial server file ==================== 
+
 import asyncio
 from aiohttp import web
 from aiortc.mediastreams import MediaStreamTrack
@@ -340,7 +342,7 @@ class VideoSummaryServer:
                 frame_count += 1
                 
                 # Process every nth frame or first frame
-                if frame_count % self.DETECTION_INTERVAL == 0 or prev_results is None:
+                if True or prev_results is None:
                     prev_results = detect_and_track(frame, self.model)
                     prev_depth_map = get_depth_map(
                         frame, self.depth_model, self.image_processor, self.device
@@ -446,6 +448,8 @@ async def stop_stream(sid):
      #asyncio.create_task(delayed_processing(frames, sid))
      if session and session["pc"]:
          await session["pc"].close()
+
+
 
 @sio.event
 async def disconnect(sid):

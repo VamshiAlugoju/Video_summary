@@ -1,0 +1,13 @@
+{
+  "watch": ["."],
+  "ext": "py,json,yml",
+  "ignore": [
+    "*.test.py",
+    "venv/*",
+    "node_modules/*",
+    "__pycache__/*",
+    "nodemon.json",
+    "audios/*"
+  ],
+  "exec": "python server.py"
+}

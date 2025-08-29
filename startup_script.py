@@ -22,7 +22,6 @@ class VideoSummaryStarter:
         required_files = [
             'ocr_server.py',
             'utils_video_summary.py', 
-            # 'websocket_backend.py',
             'server.py',
             'best.pt',  # YOLO model
             'license_plate_detector.pt'  # License plate detector
@@ -70,7 +69,7 @@ class VideoSummaryStarter:
         print("🚀 Starting WebSocket backend server...")
         try:
             process = subprocess.Popen([
-                sys.executable, 'server.py'
+                sys.executable, 'websocket_backend.py'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.processes.append(('WebSocket Server', process))
             

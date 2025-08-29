@@ -99,7 +99,7 @@ def recv_all(sock, length):
         data += packet
     return data
 
-def start_server(host="0.0.0.0", port=6000):
+def start_server(host="0.0.0.0", port=7008):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, port))
         s.listen(5)

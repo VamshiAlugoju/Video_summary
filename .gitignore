@@ -1,3 +1,5 @@
 /AwesomeProject
 /venv
 /node_modules
+/audios
+/__pycache__

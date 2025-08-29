@@ -19,6 +19,16 @@ import struct
 import os
 from typing import List, Tuple, Dict, Any
 
+from doctr.io import DocumentFile
+from doctr.models import ocr_predictor
+
+# -----------------------------
+# Global models (load once)
+# -----------------------------
+# docTR OCR model
+doctr_model = ocr_predictor(pretrained=True)
+doctr_model = doctr_model.to('cuda')
+
 
 # ---------- DEPTH + DETECTION + TRACKING ----------
 
@@ -214,7 +224,7 @@ def select_tgt_language():
         return "eng"
     return selected_code
 
-def request_translation(text, tgt_lang, host='localhost', port=50007):
+def request_translation(text, tgt_lang, host='localhost', port=51008):
     request = json.dumps({"text": text, "tgt_lang": tgt_lang})
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((host, port))
@@ -248,7 +258,7 @@ def generate_image_summary(caption, object_info, chain):
 
 #OCR recognition:
 
-def run_ocr_remote(frame_bgr, host="localhost", port=6000):
+def run_ocr_remote(frame_bgr, host="localhost", port=7008):
     data = pickle.dumps(frame_bgr)
     length = struct.pack("!I", len(data))  # 4-byte big-endian length
 
@@ -499,6 +509,54 @@ def _ioa(boxA, boxB):
         return 0
     return inter_area / boxA_area
 
+def run_fullframe_ocr(image_bgr: np.ndarray) -> List[Dict[str, Any]]:
+    """
+    Run OCR (docTR only) on the full image.
+    Returns a list of word dicts:
+      { 'bbox': [x1,y1,x2,y2], 'poly': None, 'text': str, 'conf': float }
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return []
+
+    # Save to temp file for docTR input
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        cv2.imwrite(tmp.name, image_bgr)
+        doc = DocumentFile.from_images(tmp.name)
+
+    result = doctr_model(doc)
+    h, w = image_bgr.shape[:2]
+
+    words = []
+    try:
+        page = result.pages[0]
+    except Exception:
+        return words
+
+    # Extract words with absolute pixel bboxes
+    for block in page.blocks:
+        for line in block.lines:
+            for word in line.words:
+                # word.geometry is ((xmin,ymin),(xmax,ymax)) normalized [0,1]
+                (x_min, y_min), (x_max, y_max) = word.geometry
+                x1 = int(x_min * w)
+                y1 = int(y_min * h)
+                x2 = int(x_max * w)
+                y2 = int(y_max * h)
+                txt = (word.value or "").strip()
+                if not txt:
+                    continue
+                conf = getattr(word, "confidence", 1.0)
+                words.append({
+                    "bbox": [x1, y1, x2, y2],
+                    "poly": None,  # docTR only provides rectangular geometry
+                    "text": txt,
+                    "conf": float(conf),
+                })
+    try:
+        os.remove(tmp.name)  # clean up temp file
+    except Exception:
+        pass
+    return words
 
 def match_ocr_to_plates(ocr_words, plate_boxes, frame_bgr=None, per_plate_ocr=False):
     """
@@ -551,7 +609,9 @@ def match_ocr_to_plates(ocr_words, plate_boxes, frame_bgr=None, per_plate_ocr=Fa
         if per_plate_ocr and frame_bgr is not None:
             # Better: OCR on the plate crop itself (less noise)
             crop = frame_bgr[max(0,y1):max(0,y2), max(0,x1):max(0,x2)]
-            words_in_plate = run_ocr_remote(crop)  # returns local coords in the crop
+            #words_in_plate = run_ocr_remote(crop)  # returns local coords in the crop
+            words_in_plate = run_fullframe_ocr(crop)  # returns local coords in the crop
+
             # Shift crop coords to full-frame if you later need absolute positions
             for w in words_in_plate:
                 bx = w['bbox']
@@ -646,6 +706,3 @@ def write_csv(results_per_image: List[Dict[str, Any]], output_path: str) -> None
                 txt = it.get("text")
                 sc = it.get("score", 0.0)
                 f.write(f"{fn},{vb},{pb},{txt},{sc:.3f}\n")
-
-
-
