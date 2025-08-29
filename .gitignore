@@ -5,7 +5,6 @@ __pycache__/
 *.pyd
 *.so
 *.egg-info/
-.env
 .venv/
 venv/
 ENV/
@@ -25,7 +24,6 @@ ENV/
 Thumbs.db
 
 # IDE / Editors
-.vscode/
 .idea/
 *.swp
 
@@ -35,3 +33,4 @@ node_modules/
 # Build
 dist/
 build/
+config.bat

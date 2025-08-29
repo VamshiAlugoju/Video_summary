@@ -46,13 +46,28 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 tgt_lang=tgt_lang,
                 src_lang="eng"
             )
+
             folder_name = "summary_videos"
             os.makedirs(folder_name, exist_ok=True)
 
-            # Now you can safely use it
+            # Extract audio tensor and sample rate
+            audio_tensor = speech_output.audio_wavs[0][0].to(torch.float32).cpu()
+            sample_rate = speech_output.sample_rate
+
+            # Ensure shape is [channels, samples]
+            if audio_tensor.ndim == 1:
+                audio_tensor = audio_tensor.unsqueeze(0)  # make it [1, samples]
+
+            # Create 1 second of silence with same channel count
+            num_silent_samples = sample_rate  # 1 second
+            silence = torch.zeros((audio_tensor.shape[0], num_silent_samples), dtype=torch.float32)
+
+            # Concatenate original audio + silence
+            audio_with_silence = torch.cat([audio_tensor, silence], dim=-1)
+
+            # Save the new audio
             output_path = os.path.join(folder_name, "translated_audio.wav")
-            #output_path = "translated_audio.wav"
-            torchaudio.save(output_path, speech_output.audio_wavs[0][0].to(torch.float32).cpu(), speech_output.sample_rate)
+            torchaudio.save(output_path, audio_with_silence, sample_rate)
 
             conn.sendall(output_path.encode())
             print(f"[Seamless Server] Audio file sent: {output_path}")
