@@ -201,8 +201,8 @@ class PlayerStreamTrack(MediaStreamTrack):
         self._player._start(self)
         data = await self._queue.get()
         # print("size of queue :" , self._queue.qsize())
-        if data is None or self._queue.qsize() == 10:
-            await self.stop()
+        if data is None :
+            self.stop()
             raise MediaStreamError
         if isinstance(data, Frame): 
             data_time = data.time

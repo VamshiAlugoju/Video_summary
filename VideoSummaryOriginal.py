@@ -9,15 +9,19 @@ import json
 import base64
 import cv2
 import numpy as np
-import time
-import threading
 import warnings
 import torch
 import os
-from collections import defaultdict
+import concurrent.futures
+from functools import partial
+from collections import defaultdict, deque
 from io import BytesIO
 from PIL import Image
-
+import logging
+ 
+# Suppress noisy VP8 decoder logs
+logging.getLogger("aiortc.codecs.vpx").setLevel(logging.ERROR)
+ 
 # Import your existing modules
 from transformers import DPTImageProcessor, DPTForDepthEstimation, pipeline
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -25,7 +29,7 @@ from langchain.chains.summarize import load_summarize_chain
 from langchain.prompts import PromptTemplate
 from transformers import logging
 from ultralytics import YOLO
-
+ 
 from utils_video_summary import (
     get_depth_map, detect_and_track, annotate_frame,
     generate_caption_frame, draw_caption_with_background,
@@ -33,6 +37,7 @@ from utils_video_summary import (
     match_ocr_to_plates, find_vehicle_for_plate, validate_indian_plate,
     request_translation, play_audio_file, run_fullframe_ocr,
 )
+ 
 
 
 def format_vehicle_id(input_list):
@@ -378,10 +383,10 @@ class VideoSummaryServer:
             print(f"Parallel ML operations failed: {e}")
             return None, None, "Failed to generate caption"
 
-    async def process_video_frames(self, frames):
+    async def process_video_frames(self, frames, options={"target_language": "eng"}):
         """Process accumulated video frames with parallel ML operations"""
         print(f"Processing {len(frames)} frames...")
-        
+
         try:
             captions = []
             frame_count = 0
@@ -390,14 +395,14 @@ class VideoSummaryServer:
             prev_caption = None
             track_history = defaultdict(list)
             track_plate_map = {}
-            
+
             for i, frame_data in enumerate(frames):
                 frame = frame_data.to_ndarray(format="bgr24")
                 if frame is None:
                     continue
-                
+
                 frame_count += 1
-                
+
                 # Process every nth frame or first frame with parallel ML operations
                 if frame_count % self.DETECTION_INTERVAL == 0 or prev_results is None:
                     # Run ML operations in parallel
@@ -405,61 +410,79 @@ class VideoSummaryServer:
                     
                     # Only align caption if detection succeeded
                     if prev_results is not None:
-                        caption = align_caption_with_yolo(
+                        caption = await align_caption_with_yolo(
                             caption, prev_results, frame, self.image_to_text
                         )
                     prev_caption = caption
+
                 else:
                     # Use previous results for intermediate frames
                     caption = prev_caption or "No caption available"
-                
+
                 # Continue with existing annotation logic
                 if prev_results is not None and prev_depth_map is not None:
-                    _, combined_text = annotate_frame(
-                        frame, prev_results, self.model, prev_depth_map,
-                        track_history, conf_thresh=self.CONFIDENCE_THRESHOLD,
+                    _, combined_text = await asyncio.to_thread(
+                        annotate_frame,
+                        frame,
+                        prev_results,
+                        self.model,
+                        prev_depth_map,
+                        track_history,
+                        conf_thresh=self.CONFIDENCE_THRESHOLD,
                         max_history=self.MAX_TRACK_HISTORY
                     )
-                    
+
                     merged_caption = f"{caption} | {combined_text}" if combined_text else caption
-                    
-                    # Detect vehicle number plates
-                    vehicle_plate_info = self.detect_vehicle_number_with_labels(
-                        frame, prev_results, track_plate_map
+
+                    # Detect vehicle number plates in a thread
+                    vehicle_plate_info = await asyncio.to_thread(
+                        self.detect_vehicle_number_with_labels,
+                        frame,
+                        prev_results,
+                        track_plate_map
                     )
-                    vehicle_plate_info = format_vehicle_id(vehicle_plate_info)
-                    
+                    vehicle_plate_info = await asyncio.to_thread(
+                        format_vehicle_id, vehicle_plate_info
+                    )
+
                     if vehicle_plate_info:
                         merged_caption += " | Vehicles detected: " + ", ".join(vehicle_plate_info)
-                    
+
                     captions.append(merged_caption)
-                
+
                 # Send progress update every 10 frames
                 if i % 10 == 0:
                     progress = (i + 1) / len(frames) * 100
                     print(f"Processing progress: {progress:.1f}%")
-            
+
             print("Generating summary...")
-            
-            # Generate summary using your existing function
+
+            # Generate summary in a thread to avoid blocking
             if len(captions) > 2:
-                summary = generate_summary(captions[2:], self.chain)
+                summary = await asyncio.to_thread(
+                    generate_summary, captions[2:], self.chain
+                )
                 print(summary)
             else:
                 summary = "Insufficient data for summary generation"
-                
+
             print("Summary generated successfully")
 
-
-            # Generate audio
-            #audio_file = request_translation(summary, "eng")
+            # Generate audio in a thread
+            audio_file = await asyncio.to_thread(
+                request_translation, summary, "eng"
+            )
             print("Audio generated")
 
-            return summary
-            
+            return {
+                "summary": summary,
+                "audio_file_path": audio_file
+            }
+
         except Exception as e:
             print(f"Error processing video frames: {e}")
             return f"Error processing video: {str(e)}"
+
     
     def cleanup(self):
         """Clean up thread pool on shutdown"""
@@ -469,6 +492,7 @@ class VideoSummaryServer:
 
 
 video_summary_server = VideoSummaryServer()
+
 
 __all__ = ["video_summary_server"]
 
