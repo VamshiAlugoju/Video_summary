@@ -18,6 +18,7 @@ import pickle
 import struct
 import os
 from typing import List, Tuple, Dict, Any
+import asyncio
 
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
@@ -116,7 +117,7 @@ def generate_caption_frame(frame, caption_pipeline):
     result = caption_pipeline(image_pil)
     return result[0]['generated_text'].strip()
 
-def align_caption_with_yolo(global_caption, yolo_results, frame, image_to_text):
+async def align_caption_with_yolo(global_caption, yolo_results, frame, image_to_text):
     """
     Align global caption with YOLO detected objects using object-level captions.
 
@@ -152,7 +153,8 @@ def align_caption_with_yolo(global_caption, yolo_results, frame, image_to_text):
         # 🔹 Use your generate_caption_frame for the crop
         obj_caption = ""
         try:
-            obj_caption = generate_caption_frame(obj_crop, image_to_text).lower()
+            obj_caption = await asyncio.to_thread(generate_caption_frame, obj_crop, image_to_text)
+            obj_caption = obj_caption.lower()
         except Exception as e:
             print(f"[align_caption_with_yolo] Caption failed for {yolo_label}: {e}")
         #print(f"object_caption: {obj_caption}")

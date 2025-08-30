@@ -4,6 +4,8 @@ from typing import List, Optional, TypedDict
 from aiortc import RTCPeerConnection, RTCRtpSender, RTCSessionDescription , MediaStreamTrack 
 import time
 from queue import Queue
+from VideoSummaryOriginal import video_summary_server
+
 
 from audio_player import AudioPlayer, PlayerStreamTrackPlayer
 from socket_instance import sio
@@ -35,18 +37,22 @@ class User:
         self.summary_queue : Queue[SummaryData] = Queue()
         self.curr_summary : SummaryData = None
         self.video_summary_server = None
+        self.is_ready_for_track = True
+        self.is_summary_processing = False
+        self.curr_process_task = None
         print("✅ User initialized for socket id" , sid)
 
 
     def load_video_summary_server(self):
         """Load video summary server."""
         env= os.getenv("PY_ENV")
-        if env == "dev":
-            from VideoSummary import video_summary_server
-            self.video_summary_server = video_summary_server
-        else:
-            from VideoSummaryOriginal import video_summary_server
-            self.video_summary_server = video_summary_server
+        # if env == "dev":
+        #     from VideoSummary import video_summary_server
+        #     self.video_summary_server = video_summary_server
+        # else:
+        #     from VideoSummaryOriginal import video_summary_server
+        #     self.video_summary_server = video_summary_server
+
    
     
     def select_target_language(self, language: str):
@@ -125,7 +131,12 @@ class User:
                         if time_diff >= INTERVAL_SEC:
                             frames_to_process = self.frames[:] 
                             self.frames = []
-                            asyncio.create_task(self.delayed_processing(frames_to_process))
+                            if self.is_streaming is False and self.is_summary_processing is False:
+                              self.curr_process_task =  asyncio.create_task(self.delayed_processing(frames_to_process))
+                            else:
+                                print(f"skipping current batch of frames is_summary_processing = {self.is_summary_processing}  and is_streaming = {self.is_streaming} ")
+                            
+                            print("resetting stream start time-----------==++++++++++++++>>" , len(self.frames))
                             stream_start_time = time.time()  # reset timer
                 except Exception as e:
                     print(f"Track ended for {self.sid}, stopping frame logging" , e)
@@ -134,9 +145,16 @@ class User:
         
     async def delayed_processing(self , frames ):
         """Process frames after a delay."""
+        if(self.is_streaming == True):
+            print("programme is still streaming skipping the current frames")
+            return
         try:
             print(f"⏳ {len(frames)} frames collected, processing now...") 
-            current_fps = len(frames) / (time.time() - self.prev_summary_processed_time)
+
+            # current current_fps immplementation: took interval_sec as interval instead of actual time before processing
+            # current_fps = len(frames) / (time.time() - self.prev_summary_processed_time)
+            current_fps = len(frames) / INTERVAL_SEC
+
             self.prev_summary_processed_time = time.time()
             print(f"FPS: {current_fps}")
             skip_frames = max(1, int(current_fps / PROCESSING_FPS))
@@ -144,8 +162,10 @@ class User:
             for i in range(0, len(frames), skip_frames): 
                 filtered_frames.append(frames[i])
             print("🚀 Processing frames size :", len(filtered_frames))
+            self.is_summary_processing = True
             # await sio.emit("summary_processing" , {"status" : True} , to=sid)
-            process_output = await video_summary_server.process_video_frames(filtered_frames ,self.sid, options={"target_language" : self.target_language})
+            process_output = await video_summary_server.process_video_frames(filtered_frames , options={"target_language" : self.target_language})
+            self.is_summary_processing = False
             summary = process_output["summary"] 
             audio_file_path = process_output["audio_file_path"]
             self.summary_queue.put( {
@@ -156,20 +176,29 @@ class User:
              
             # start streaming the file as soon as it is created
             if self.is_recording == True and self.summary_queue.qsize() == 1 and self.is_streaming == False:
+                print("---------------------------------------------------playing next song --------------------------------------------------------------")
                 await self.load_next_summary()
 
             # if(self.is_streaming == False  and self.summary_queue.qsize() ==1 and self.is_recording == True ):
             return process_output
         except Exception as e:
             print(f"Track ended for {self.sid}: {e}")
+            self.is_summary_processing = False
+        
+
         
     async def load_next_summary(self):
          
+
         if not  self.summary_queue.empty() and self.is_recording == True :
             self.is_streaming = True
             summary_data = self.summary_queue.get() 
             await self.initiate_pc_out_connection(summary_data["audio_file_path"])
+
             self.curr_summary = summary_data
+            print("sending summary to the client")
+            await sio.emit("summary_generated" , {  "summary" : summary_data.get("summary") }, to=self.sid)
+ 
         else:
             print("✅ All summaries processed for socket id" , self.sid)
             self.is_streaming = False
@@ -187,6 +216,7 @@ class User:
         await self.close_pc_out_connection()
         asyncio.create_task(self.remove_completed_file(self.curr_summary["audio_file_path"]))
         print("peer_connection_out closed for socket id" , self.sid)
+        await sio.emit("summary_reading_ended" , { "status" : True  } , to=self.sid )
         await self.load_next_summary()
     
     async def remove_completed_file(self, file_path: str):
@@ -224,7 +254,12 @@ class User:
         self.is_streaming = False
         self.frames = []
         self.is_recording = False
-        
+        if self.curr_process_task is not None:
+            try: 
+                self.curr_process_task.cancel()
+                print("summarization process stoped after stream is stoppedd")
+            except Exception as e:
+                print("error closing the task" , e)
 
     
 
