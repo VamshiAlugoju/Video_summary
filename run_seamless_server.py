@@ -60,7 +60,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 audio_tensor = audio_tensor.unsqueeze(0)  # make it [1, samples]
 
             # Create 1 second of silence with same channel count
-            num_silent_samples = sample_rate  # 1 second
+            num_silent_samples = 2 * sample_rate  # 1 second
             silence = torch.zeros((audio_tensor.shape[0], num_silent_samples), dtype=torch.float32)
 
             # Concatenate original audio + silence

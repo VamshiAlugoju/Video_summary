@@ -295,9 +295,11 @@ class AudioPlayer:
             "The `loop` argument requires a seekable file"
         )
         self._loop_playback = loop
+        audio_stream = next(s for s in self.__container.streams if s.type == 'audio')
+
+  
         asyncio.create_task(self.stop_with_deley())
       
-
     
     async def stop_with_deley(self):
         print(f"playing {self.__file_name}")

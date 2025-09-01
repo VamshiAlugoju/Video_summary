@@ -55,9 +55,6 @@ def format_vehicle_id(input_list):
  
 class VideoSummaryServer:
     def __init__(self):
-        # Session management
-        self.sessions = {}  # websocket -> session data
-        
         # Language mapping
         self.lang_map = {
             "arb": "Arabic", "ben": "Bengali", "cat": "Catalan", "ces": "Czech", "cmn": "Mandarin Chinese",
@@ -70,13 +67,16 @@ class VideoSummaryServer:
             "vie": "Vietnamese"
         }
         
+        # User-specific session data
+        self.user_sessions = {}  # user_id -> session data
+        
         # Initialize models
         self.setup_models()
         
         # Create thread pool for parallel ML operations
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         print("Video Summary Server initialized")
-    
+
     def setup_models(self):
         """Initialize all the AI models"""
         warnings.filterwarnings("ignore")
@@ -166,6 +166,26 @@ class VideoSummaryServer:
         self.CONFIDENCE_THRESHOLD = 0.4
         self.MAX_TRACK_HISTORY = 30
 
+    def get_user_session_data(self, user_id):
+        """Get or initialize user-specific session data"""
+        if user_id not in self.user_sessions:
+            self.user_sessions[user_id] = {
+                'caption_buffer': [],
+                'frame_count': 0,
+                'prev_results': None,
+                'prev_depth_map': None,
+                'prev_caption': None,
+                'track_history': defaultdict(list),
+                'track_plate_map': {}
+            }
+        return self.user_sessions[user_id]
+
+    def cleanup_user_session(self, user_id):
+        """Clean up user session data when user disconnects"""
+        if user_id in self.user_sessions:
+            del self.user_sessions[user_id]
+            print(f"Cleaned up session data for user: {user_id}")
+
     async def run_ml_operations_parallel(self, frame):
         """Run the three ML operations in parallel"""
         loop = asyncio.get_event_loop()
@@ -202,28 +222,179 @@ class VideoSummaryServer:
         except Exception as e:
             print(f"Parallel ML operations failed: {e}")
             return None, None, "Failed to generate caption"
-    
-    def base64_to_frame(self, base64_string):
-        """Convert base64 string to OpenCV frame"""
+
+    async def process_frames_ml_only(self, frames, user_session):
+        """Process frames with ML operations only - accumulate captions for specific user"""
+        user_id = user_session.sid
+        print(f"Processing {len(frames)} frames for user {user_id}...")
+        
+        # Get user-specific session data
+        session_data = self.get_user_session_data(user_id)
+        
         try:
-            # Remove the data URL prefix if present
-            if ',' in base64_string:
-                base64_string = base64_string.split(',')[1]
+            for i, frame_data in enumerate(frames):
+                frame = frame_data.to_ndarray(format="bgr24")
+                if frame is None:
+                    continue
+                
+                session_data['frame_count'] += 1
+                
+                # Process every nth frame or first frame with parallel ML operations
+                if (session_data['frame_count'] % self.DETECTION_INTERVAL == 0 or 
+                    session_data['prev_results'] is None):
+                    
+                    # Run ML operations in parallel
+                    detection_result, depth_map, caption = await self.run_ml_operations_parallel(frame)
+                    
+                    # Only align caption if detection succeeded
+                    if detection_result is not None:
+                        caption = await align_caption_with_yolo(
+                            caption, detection_result, frame, self.image_to_text
+                        )
+                    
+                    # Update session data
+                    session_data['prev_results'] = detection_result
+                    session_data['prev_depth_map'] = depth_map
+                    session_data['prev_caption'] = caption
+                else:
+                    # Use previous results for intermediate frames
+                    caption = session_data['prev_caption'] or "No caption available"
+                
+                # Continue with existing annotation logic
+                if (session_data['prev_results'] is not None and 
+                    session_data['prev_depth_map'] is not None):
+                    
+                    combined_text = await asyncio.to_thread(
+                        annotate_frame,
+                        frame,
+                        session_data['prev_results'],
+                        self.model,
+                        session_data['prev_depth_map'],
+                        session_data['track_history'],
+                        conf_thresh=self.CONFIDENCE_THRESHOLD,
+                        max_history=self.MAX_TRACK_HISTORY
+                    )
+                    
+                    merged_caption = f"{caption} | {combined_text}" if combined_text else caption
+                    
+                    # Detect vehicle number plates in a thread
+                    vehicle_plate_info = await asyncio.to_thread(
+                        self.detect_vehicle_number_with_labels,
+                        frame,
+                        session_data['prev_results'],
+                        session_data['track_plate_map']
+                    )
+                    
+                    vehicle_plate_info = await asyncio.to_thread(
+                        format_vehicle_id, vehicle_plate_info
+                    )
+                    
+                    if vehicle_plate_info:
+                        merged_caption += " | Vehicles detected: " + ", ".join(vehicle_plate_info)
+                    
+                    # Add to user-specific caption buffer
+                    session_data['caption_buffer'].append(merged_caption)
+                
+                # Send progress update every 10 frames
+                if i % 10 == 0:
+                    progress = (i + 1) / len(frames) * 100
+                    print(f"Processing progress: {progress:.1f}% for user {user_id}")
             
-            # Decode base64 to bytes
-            img_bytes = base64.b64decode(base64_string)
-            
-            # Convert to numpy array
-            nparr = np.frombuffer(img_bytes, np.uint8)
-            
-            # Decode to OpenCV image
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            return frame
+            return {
+                "status": "ML processing completed",
+                "total_captions": len(session_data['caption_buffer']),
+                "user_id": user_id
+            }
+                
         except Exception as e:
-            print(f"Error converting base64 to frame: {e}")
-            return None
-    
+            print(f"Error processing ML operations for user {user_id}: {e}")
+            return {"error": f"Error processing video: {str(e)}", "user_id": user_id}
+
+    async def generate_summary_and_audio(self, user_session, options={"target_language": "eng"}):
+        """Generate summary and audio for accumulated captions of specific user"""
+        user_id = user_session.sid
+        session_data = self.get_user_session_data(user_id)
+        
+        try:
+            if len(session_data['caption_buffer']) > 2:
+                print(f"Generating 5-second summary for user {user_id}...")
+                
+                # Generate summary for the entire 5-second period
+                summary = await asyncio.to_thread(
+                    generate_summary, session_data['caption_buffer'][2:], self.chain
+                )
+                print(f"Summary generated for user {user_id}: {summary}")
+                
+                # Generate audio in a thread
+                audio_file = await asyncio.to_thread(
+                    request_translation, summary, options.get("target_language", "eng")
+                )
+                print(f"Audio generated for user {user_id}")
+                
+                # Clear buffer after processing
+                processed_captions = len(session_data['caption_buffer'])
+                session_data['caption_buffer'] = []
+                
+                return {
+                    "summary": summary,
+                    "audio_file_path": audio_file,
+                    "total_captions": processed_captions,
+                    "buffer_cleared": True,
+                    "user_id": user_id
+                }
+            else:
+                print(f"Insufficient data for summary generation for user {user_id} (need more than 2 captions)")
+                processed_captions = len(session_data['caption_buffer'])
+                session_data['caption_buffer'] = []
+                
+                return {
+                    "summary": "Insufficient data for summary generation",
+                    "audio_file_path": None,
+                    "total_captions": processed_captions,
+                    "buffer_cleared": True,
+                    "user_id": user_id
+                }
+                
+        except Exception as e:
+            print(f"Error generating summary for user {user_id}: {e}")
+            return {"error": f"Error generating summary: {str(e)}", "user_id": user_id}
+
+    async def process_video_frames(self, frames, user_session, options={"target_language": "eng"}, is_final_chunk=True):
+        """Main entry point - process frames with user isolation"""
+        user_id = user_session.sid
+        
+        try:
+            # First, run ML operations and accumulate captions for this specific user
+            ml_result = await self.process_frames_ml_only(frames, user_session)
+            
+            if "error" in ml_result:
+                return ml_result
+            
+            # Only generate summary and audio if this is the final chunk (every 5 seconds)
+            if is_final_chunk:
+                summary_result = await self.generate_summary_and_audio(user_session, options)
+                
+                # Combine results
+                return {
+                    **ml_result,
+                    **summary_result,
+                    "is_final_chunk": True
+                }
+            else:
+                # Intermediate chunk - just return ML processing status
+                return {
+                    **ml_result,
+                    "summary": None,
+                    "audio_file_path": None,
+                    "buffer_cleared": False,
+                    "is_final_chunk": False,
+                    "status": f"Captions buffered for user {user_id}, waiting for 5-second completion"
+                }
+                
+        except Exception as e:
+            print(f"Error processing video frames for user {user_id}: {e}")
+            return {"error": f"Error processing video: {str(e)}", "user_id": user_id}
+
     def detect_vehicle_number_with_labels(self, frame_bgr, yolo_results, track_plate_map):
         """Detect vehicle number plates with labels"""
         # Get vehicle bboxes + labels + track IDs
@@ -291,204 +462,31 @@ class VideoSummaryServer:
                                 f"ID{tid}: {label} - {track_plate_map[tid]}"
                             )
         return vehicle_plate_pairs
-    
-    async def generate_and_play_audio(self, summary, language, websocket):
-        """Generate audio from summary and play it"""
-        try:
-            # Notify client that audio generation started
-            await websocket.send(json.dumps({
-                'type': 'processing_status',
-                'message': f'Generating audio in {self.lang_map.get(language, language)}...'
-            }))
-            
-            print(f"Generating audio for language: {language} ({self.lang_map.get(language, language)})")
-            
-            # Generate audio using translation service
-            audio_file = request_translation(summary, language)
-            
-            if audio_file and os.path.exists(audio_file):
-                # Notify client that audio is playing
-                await websocket.send(json.dumps({
-                    'type': 'audio_playing',
-                    'message': f'Playing audio in {self.lang_map.get(language, language)}'
-                }))
-                
-                print(f"Playing audio file: {audio_file}")
-                
-                # Play audio (this will block until audio finishes)
-                play_audio_file(audio_file)
-                
-                # Notify client that audio completed
-                await websocket.send(json.dumps({
-                    'type': 'audio_complete',
-                    'message': 'Audio playback completed'
-                }))
-                
-                print("Audio playback completed")
-                
-                # Clean up audio file
-                try:
-                    #os.remove(audio_file)
-                    print(f"Cleaned up audio file: {audio_file}")
-                except:
-                    pass
-            else:
-                await websocket.send(json.dumps({
-                    'type': 'error',
-                    'message': 'Failed to generate audio file'
-                }))
-                print("Failed to generate audio file")
-        
-        except Exception as e:
-            print(f"Error in audio generation: {e}")
-            await websocket.send(json.dumps({
-                'type': 'error',
-                'message': f'Audio generation failed: {str(e)}'
-            }))
 
-    async def run_ml_operations_parallel(self, frame):
-        """Run the three ML operations in parallel"""
-        loop = asyncio.get_event_loop()
-        
-        # Create partial functions for thread execution
-        detect_task = partial(detect_and_track, frame, self.model)
-        depth_task = partial(get_depth_map, frame, self.depth_model, self.image_processor, self.device)
-        caption_task = partial(generate_caption_frame, frame, self.image_to_text)
-        
-        try:
-            # Run all three operations concurrently
-            results = await asyncio.gather(
-                loop.run_in_executor(self.thread_pool, detect_task),
-                loop.run_in_executor(self.thread_pool, depth_task),
-                loop.run_in_executor(self.thread_pool, caption_task),
-                return_exceptions=True
-            )
-            
-            # Handle any exceptions
-            detection_result, depth_map, caption = results
-            
-            if isinstance(detection_result, Exception):
-                print(f"Detection failed: {detection_result}")
-                detection_result = None
-            if isinstance(depth_map, Exception):
-                print(f"Depth estimation failed: {depth_map}")
-                depth_map = None
-            if isinstance(caption, Exception):
-                print(f"Captioning failed: {caption}")
-                caption = "Failed to generate caption"
-            
-            return detection_result, depth_map, caption
-            
-        except Exception as e:
-            print(f"Parallel ML operations failed: {e}")
-            return None, None, "Failed to generate caption"
-
-    async def process_video_frames(self, frames, options={"target_language": "eng"}):
-        """Process accumulated video frames with parallel ML operations"""
-        print(f"Processing {len(frames)} frames...")
-
-        try:
-            captions = []
-            frame_count = 0
-            prev_results = None
-            prev_depth_map = None
-            prev_caption = None
-            track_history = defaultdict(list)
-            track_plate_map = {}
-
-            for i, frame_data in enumerate(frames):
-                frame = frame_data.to_ndarray(format="bgr24")
-                if frame is None:
-                    continue
-
-                frame_count += 1
-
-                # Process every nth frame or first frame with parallel ML operations
-                if frame_count % self.DETECTION_INTERVAL == 0 or prev_results is None:
-                    # Run ML operations in parallel
-                    prev_results, prev_depth_map, caption = await self.run_ml_operations_parallel(frame)
-                    
-                    # Only align caption if detection succeeded
-                    if prev_results is not None:
-                        caption = await align_caption_with_yolo(
-                            caption, prev_results, frame, self.image_to_text
-                        )
-                    prev_caption = caption
-
-                else:
-                    # Use previous results for intermediate frames
-                    caption = prev_caption or "No caption available"
-
-                # Continue with existing annotation logic
-                if prev_results is not None and prev_depth_map is not None:
-                    _, combined_text = await asyncio.to_thread(
-                        annotate_frame,
-                        frame,
-                        prev_results,
-                        self.model,
-                        prev_depth_map,
-                        track_history,
-                        conf_thresh=self.CONFIDENCE_THRESHOLD,
-                        max_history=self.MAX_TRACK_HISTORY
-                    )
-
-                    merged_caption = f"{caption} | {combined_text}" if combined_text else caption
-
-                    # Detect vehicle number plates in a thread
-                    vehicle_plate_info = await asyncio.to_thread(
-                        self.detect_vehicle_number_with_labels,
-                        frame,
-                        prev_results,
-                        track_plate_map
-                    )
-                    vehicle_plate_info = await asyncio.to_thread(
-                        format_vehicle_id, vehicle_plate_info
-                    )
-
-                    if vehicle_plate_info:
-                        merged_caption += " | Vehicles detected: " + ", ".join(vehicle_plate_info)
-
-                    captions.append(merged_caption)
-
-                # Send progress update every 10 frames
-                if i % 10 == 0:
-                    progress = (i + 1) / len(frames) * 100
-                    print(f"Processing progress: {progress:.1f}%")
-
-            print("Generating summary...")
-
-            # Generate summary in a thread to avoid blocking
-            if len(captions) > 2:
-                summary = await asyncio.to_thread(
-                    generate_summary, captions[2:], self.chain
-                )
-                print(summary)
-            else:
-                summary = "Insufficient data for summary generation"
-
-            print("Summary generated successfully")
-
-            # Generate audio in a thread
-            audio_file = await asyncio.to_thread(
-                request_translation, summary, "eng"
-            )
-            print("Audio generated")
-
+    def get_user_session_stats(self, user_id):
+        """Get statistics for specific user session"""
+        if user_id in self.user_sessions:
+            session_data = self.user_sessions[user_id]
             return {
-                "summary": summary,
-                "audio_file_path": audio_file
+                'user_id': user_id,
+                'caption_buffer_size': len(session_data['caption_buffer']),
+                'frame_count': session_data['frame_count'],
+                'has_prev_results': session_data['prev_results'] is not None
             }
+        return None
 
-        except Exception as e:
-            print(f"Error processing video frames: {e}")
-            return f"Error processing video: {str(e)}"
+    def get_all_session_stats(self):
+        """Get statistics for all active user sessions"""
+        return {user_id: self.get_user_session_stats(user_id) 
+                for user_id in self.user_sessions.keys()}
 
-    
     def cleanup(self):
         """Clean up thread pool on shutdown"""
         if hasattr(self, 'thread_pool'):
             self.thread_pool.shutdown(wait=True)
             print("Thread pool cleaned up")
+
+
 
 
 video_summary_server = VideoSummaryServer()

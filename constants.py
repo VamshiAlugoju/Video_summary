@@ -13,8 +13,8 @@ lang_map = {
             "vie": "Vietnamese"
         }
 
-
-INTERVAL_SEC = 5
+TOTAL_INTERVAL = 5
+INTERVAL_SEC = 1
 PROCESSING_FPS = 3  
 
-__all__ = ["random_summary" , "lang_map" , "INTERVAL_SEC" , "PROCESSING_FPS"]
+__all__ = ["random_summary" , "lang_map" , "INTERVAL_SEC" , "PROCESSING_FPS", "TOTAL_INTERVAL"]
