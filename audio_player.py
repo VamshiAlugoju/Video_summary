@@ -263,6 +263,7 @@ class AudioPlayer:
         decode: bool = True,
         on_ended :Any = None,
         sid : Any = None,
+        batch_id : str = None,
     ) -> None:
         self.__container = av.open(
             file=file, format=format, mode="r", options=options, timeout=timeout
@@ -277,6 +278,7 @@ class AudioPlayer:
         self.__decode = decode
         self.__audio: Optional[PlayerStreamTrack] = None
         self._sid = sid
+        self._batch_id = batch_id
         for stream in self.__container.streams:
             if stream.type == "audio" and not self.__audio:
                 if self.__decode:
@@ -311,7 +313,7 @@ class AudioPlayer:
         print(f"stopping audio player with deley {trimmed_duration} sec")
         await asyncio.sleep(trimmed_duration)
         print("stopping pc conn")
-        await self.__on_ended()        
+        await self.__on_ended( self._batch_id)        
 
     @property
     def audio(self) -> Optional[MediaStreamTrack]:

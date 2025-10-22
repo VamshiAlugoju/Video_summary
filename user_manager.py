@@ -4,7 +4,10 @@ from typing import List, Optional, TypedDict
 from aiortc import RTCPeerConnection, RTCRtpSender, RTCSessionDescription , MediaStreamTrack 
 import time
 from queue import Queue
-from VideoSummaryOriginal import video_summary_server
+from VideoSummary import video_summary_server
+import random
+# from VideoSummaryOriginal import video_summary_server
+
 
 
 from audio_player import AudioPlayer, PlayerStreamTrackPlayer
@@ -17,6 +20,7 @@ ROOT = os.path.dirname(__file__)
 class SummaryData(TypedDict):
     summary : str
     audio_file_path : str
+    batch_id : str
 
 
 class User:
@@ -36,6 +40,7 @@ class User:
         self.curr_idx : int = 0
         self.summary_queue : Queue[SummaryData] = Queue()
         self.curr_summary : SummaryData = None
+        self.curr_summaryId : str = None
         self.video_summary_server = None
         self.is_ready_for_track = True
         self.is_summary_processing = False
@@ -58,6 +63,7 @@ class User:
     def select_target_language(self, language: str):
         """Select target language."""
         self.target_language = language
+        print("✅ Target language selected for socket id sid" , self.sid , "language" , language)
     
     async  def handle_offer(self, data):
         """Handle WebRTC offer."""
@@ -89,7 +95,8 @@ class User:
         try:
             pc = RTCPeerConnection()
             path = os.path.join(ROOT, audio_track_path)
-            player =  AudioPlayer(path , on_ended = self.on_ended , sid = self.sid)
+            batch_id = self.curr_summary["batch_id"]
+            player =  AudioPlayer(path , on_ended = self.on_ended , sid = self.sid , batch_id = batch_id)
             pc.addTrack(player.audio)
             offer = await pc.createOffer()
             await pc.setLocalDescription(offer)
@@ -151,6 +158,8 @@ class User:
         try:
             print(f"⏳ {len(frames)} frames collected, processing now...") 
 
+            batch_id = random_number_string()
+
             # current current_fps immplementation: took interval_sec as interval instead of actual time before processing
             # current_fps = len(frames) / (time.time() - self.prev_summary_processed_time)
             current_fps = len(frames) / INTERVAL_SEC
@@ -164,13 +173,14 @@ class User:
             print("🚀 Processing frames size :", len(filtered_frames))
             self.is_summary_processing = True
             # await sio.emit("summary_processing" , {"status" : True} , to=sid)
-            process_output = await video_summary_server.process_video_frames(filtered_frames , options={"target_language" : self.target_language})
+            process_output = await video_summary_server.process_video_frames(filtered_frames ,sid=self.sid , options={"target_language" : self.target_language})
             self.is_summary_processing = False
             summary = process_output["summary"] 
             audio_file_path = process_output["audio_file_path"]
             self.summary_queue.put( {
                 "summary" : summary,
-                "audio_file_path" : audio_file_path
+                "audio_file_path" : audio_file_path,
+                "batch_id" : batch_id
             } )
             print("✅ Summary added to list for socket id" , self.sid)
              
@@ -196,8 +206,9 @@ class User:
             await self.initiate_pc_out_connection(summary_data["audio_file_path"])
 
             self.curr_summary = summary_data
+         
             print("sending summary to the client")
-            await sio.emit("summary_generated" , {  "summary" : summary_data.get("summary") }, to=self.sid)
+            await sio.emit("summary_generated" , {  "summary" : summary_data.get("summary") , "batch_id" : summary_data.get("batch_id") }, to=self.sid)
  
         else:
             print("✅ All summaries processed for socket id" , self.sid)
@@ -209,14 +220,14 @@ class User:
             self.summary_queue = Queue()
     
 
-    async def on_ended(self):
+    async def on_ended(self , batch_id):
         """Handle WebRTC track ended."""
-        print("✅ Track ended for socket id" , self.sid)
+        print("✅ Track ended for socket id" , self.sid , "batch_id" , batch_id)
          
         await self.close_pc_out_connection()
         asyncio.create_task(self.remove_completed_file(self.curr_summary["audio_file_path"]))
         print("peer_connection_out closed for socket id" , self.sid)
-        await sio.emit("summary_reading_ended" , { "status" : True  } , to=self.sid )
+        await sio.emit("summary_reading_ended" , { "status" : True , "batch_id" : batch_id } , to=self.sid )
         await self.load_next_summary()
     
     async def remove_completed_file(self, file_path: str):
@@ -292,3 +303,18 @@ class UserManagerHandler:
             await self.users_by_sid[sid].handle_disconnect()
             del self.users_by_sid[sid]
 
+
+
+
+
+def random_number_string(length=6):
+    """
+    Generate and return a string of random digits.
+
+    Args:
+        length (int): Number of digits in the string. Default is 6.
+
+    Returns:
+        str: Random number string.
+    """
+    return ''.join(str(random.randint(0, 9)) for _ in range(length))

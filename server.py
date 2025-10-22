@@ -57,6 +57,9 @@ async def select_target_language(sid , data):
 @sio.event
 async def offer(sid, data):
     user = user_manager_instance.get_user(sid)
+    print("data",data)
+    if(data["target_language"] is not None and user is not None):
+         user.select_target_language(data["target_language"])
     await user.handle_offer(data)
 
 @sio.event
@@ -114,9 +117,9 @@ def handle_exit(sig=None, frame=None):
     finally:
         sys.exit(0)
 
-# --- Register signals ---
-signal.signal(signal.SIGINT, handle_exit)   # Ctrl+C
-signal.signal(signal.SIGTERM, handle_exit) # kill
+# # --- Register signals ---
+# signal.signal(signal.SIGINT, handle_exit)   # Ctrl+C
+# signal.signal(signal.SIGTERM, handle_exit) # kill
  
 
 # ----------------------------
